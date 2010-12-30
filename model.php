@@ -62,6 +62,7 @@
 		private $primary;
 		private $index;
 		private $unique;
+		private $multi_index;
 
 		public function exists()
 		{
@@ -105,6 +106,8 @@
 					case 'primary':
 						// escape if primary key
 						break;
+					case 'multi-index':
+						$this->$k = array_unique(edx($array, $k, isset($v[1]) ? $v[1] : array()));
 					case 'index':
 					case 'unique':
 					default:
@@ -112,7 +115,7 @@
 				}
 		}
 
-		public static function all($class, $uuids)
+		public static function cast($class, $uuids)
 		{
 			if (is_array($uuids) && count($uuids) > 0)
 			{
@@ -126,6 +129,17 @@
 					$all[] = new $class(unserialize($value));
 				return $all;
 			}
+		}
+
+		public static function all($class)
+		{
+			global $odm;
+			$prefix = "{$class}->fetch(";
+			$len = strlen($prefix);
+			$keys = $odm->keys("{$prefix}*");
+			foreach ($keys as $k => $v)
+				$keys[$k] = substr($v, strpos($v, $prefix) + $len, strlen($v) - $len - 1);
+			return $keys;
 		}
 
 		// cache a specific instance of subclass s.t. some static
@@ -154,6 +168,12 @@
 									$pipe->smembers("{$class}->indexOf({$member},{$v})");
 							});
 							break;
+						case 'multi-index':
+							$replies = $odm->pipeline(function ($pipe) use ($class, $member, $indexes) {
+								foreach ($indexes as $v)
+									$pipe->smembers("{$class}->multiIndexOf({$member},{$v})");
+							});
+							break;
 						case 'unique':
 							$keys = array();
 							foreach ($indexes as $v)
@@ -168,6 +188,8 @@
 				{
 					case 'index':
 						return $odm->smembers("{$class}->indexOf({$member},{$indexes})");
+					case 'multi-index':
+						return $odm->smembers("{$class}->multiIndexOf({$member},{$indexes})");
 					case 'unique':
 						return $odm->get("{$class}->uniqueOf({$member},{$indexes})");
 				}
@@ -208,10 +230,12 @@
 				$this->index = self::$scanCache[$this->className]['index'];
 				$this->unique = self::$scanCache[$this->className]['unique'];
 				$this->primary = self::$scanCache[$this->className]['primary'];
+				$this->multi_index = self::$scanCache[$this->className]['multi-index'];
 			} else {
 				$field = array();
 				$index = array();
 				$unique = array();
+				$multi_index = array();
 				foreach ($this as $k => $v)
 					if (is_array($v))
 					{
@@ -227,14 +251,18 @@
 							case 'unique':
 								$unique[] = $k;
 								break;
+							case 'multi-index':
+								$multi_index[] = $k;
 						}
 					}
 				$this->field = $field;
 				$this->index = $index;
 				$this->unique = $unique;
+				$this->multi_index = $multi_index;
 				self::$scanCache[$this->className] = array('field' => $field,
 														   'index' => $index,
 														   'unique' => $unique,
+														   'multi-index' => $multi_index,
 														   'primary' => $this->primary);
 			}
 		}
@@ -256,21 +284,27 @@
 			if (isset($this->primary))
 			{
 				$primary = $this->primary;
-				if (count($this->index) == 0 && count($this->unique) == 0)
+				if (count($this->index) == 0 && count($this->unique) == 0 && count($this->multi_index) == 0)
 				{
 					$odm->set("{$this->className}->fetch({$this->$primary})", serialize($this->toArray()));
 				} else {
 					$uuid = $this->$primary;
 					$className = $this->className;
-					$serialized = serialize($this->toArray());
 					$kvidx = array();
 					foreach ($this->index as $v)
 						$kvidx[$v] = $this->$v;
 					$kvunq = array();
 					foreach ($this->unique as $v)
 						$kvunq[$v] = $this->$v;
+					$kvmdx = array();
+					foreach ($this->multi_index as $v)
+					{
+						$this->$v = array_unique($this->$v);
+						$kvmdx[$v] = $this->$v;
+					}
+					$serialized = serialize($this->toArray());
 					$rawData = $this->rawData;
-					$odm->pipeline(function ($pipe) use ($className, $uuid, $serialized, $rawData, $kvidx, $kvunq) {
+					$odm->pipeline(function ($pipe) use ($className, $uuid, $serialized, $rawData, $kvidx, $kvunq, $kvmdx) {
 						$pipe->set("{$className}->fetch({$uuid})", $serialized);
 						foreach ($kvidx as $k => $v)
 							if ($rawData[$k] !== $v)
@@ -286,6 +320,16 @@
 								if (!empty($rawData[$k]))
 									$pipe->del("{$className}->uniqueOf({$k},{$rawData[$k]})");
 							}
+						foreach ($kvmdx as $k => $v)
+						{
+							$o = isset($rawData[$k]) ? $rawData[$k] : array();
+							$add = array_diff($v, $o);
+							$rem = array_diff($o, $v);
+							foreach ($add as $av)
+								$pipe->sadd("{$className}->multiIndexOf({$k},{$av})", $uuid);
+							foreach ($rem as $rv)
+								$pipe->srem("{$className}->multiIndexOf({$k},{$rv})", $uuid);
+						}
 					});
 				}
 				$this->existence = true;

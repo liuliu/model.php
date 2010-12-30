@@ -9,6 +9,7 @@
 		public $date = array('integer');
 		public $author = array('index');
 		public $key = array('unique');
+		public $coauthor = array('multi-index');
 
 		public function __construct($uuid)
 		{
