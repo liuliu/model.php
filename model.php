@@ -69,11 +69,23 @@
 			return $this->existence;
 		}
 
+		private function toArrayInternal()
+		{
+			$result = array();
+			foreach ($this->field as $k => $v)
+				if ($v[0] != 'atomic')
+					$result[$k] = $this->$k;
+			return $result;
+		}
+
 		public function toArray()
 		{
 			$result = array();
 			foreach ($this->field as $k => $v)
-				$result[$k] = $this->$k;
+				if ($v[0] != 'atomic')
+					$result[$k] = $this->$k;
+				else
+					$result[$k] = $this->$k->get();
 			return $result;
 		}
 
@@ -293,7 +305,7 @@
 				$primary = $this->primary;
 				if (count($this->index) == 0 && count($this->unique) == 0 && count($this->multi_index) == 0)
 				{
-					$odm->set("{$this->className}->fetch({$this->$primary})", serialize($this->toArray()));
+					$odm->set("{$this->className}->fetch({$this->$primary})", serialize($this->toArrayInternal()));
 				} else {
 					$uuid = $this->$primary;
 					$className = $this->className;
@@ -309,7 +321,7 @@
 						$this->$v = array_unique($this->$v);
 						$kvmdx[$v] = $this->$v;
 					}
-					$serialized = serialize($this->toArray());
+					$serialized = serialize($this->toArrayInternal());
 					$rawData = $this->rawData;
 					$odm->pipeline(function ($pipe) use ($className, $uuid, $serialized, $rawData, $kvidx, $kvunq, $kvmdx) {
 						$pipe->set("{$className}->fetch({$uuid})", $serialized);
