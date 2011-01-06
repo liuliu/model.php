@@ -6,7 +6,7 @@
 	{
 		private $identifier;
 
-		public function get($pipe)
+		public function get($pipe = null)
 		{
 			if (isset($pipe))
 				return $pipe->get($this->identifier);
@@ -16,7 +16,7 @@
 			}
 		}
 
-		public function set($val, $pipe)
+		public function set($val, $pipe = null)
 		{
 			if (isset($pipe))
 				return $pipe->set($this->identifier, $val);
@@ -26,7 +26,7 @@
 			}
 		}
 
-		public function incrby($val, $pipe)
+		public function incrby($val, $pipe = null)
 		{
 			if (isset($pipe))
 				return $pipe->incrby($this->identifier, $val);
@@ -36,7 +36,7 @@
 			}
 		}
 
-		public function decrby($val, $pipe)
+		public function decrby($val, $pipe = null)
 		{
 			if (isset($pipe))
 				return $pipe->decrby($this->identifier, $val);
@@ -46,7 +46,7 @@
 			}
 		}
 
-		public function __construct($identifier)
+		public function __construct($identifier = null)
 		{
 			$this->identifier = $identifier;
 		}
@@ -103,16 +103,26 @@
 					case 'atomic':
 						// escape if atomic
 						break;
-					case 'primary':
-						// escape if primary key
-						break;
 					case 'multi-index':
 						$this->$k = array_unique(edx($array, $k, isset($v[1]) ? $v[1] : array()));
+					case 'primary':
 					case 'index':
 					case 'unique':
 					default:
 						$this->$k = edx($array, $k, $v[1]);
 				}
+		}
+
+		private function init($uuid)
+		{
+			foreach ($this->field as $k => $v)
+				if ($v[0] ==  'atomic')
+					$this->$k = new Atomic("{$this->className}->{$k}({$uuid})");
+			if (isset($this->primary))
+			{
+				$primary = $this->primary;
+				$this->$primary = $uuid;
+			}
 		}
 
 		public static function cast($class, $uuids)
@@ -125,18 +135,22 @@
 					$keys[] = "{$class}->fetch({$uuid})";
 				$values = $odm->mget($keys);
 				$all = array();
-				foreach ($values as $value)
-					$all[] = new $class(unserialize($value));
+				foreach ($values as $k => $value)
+				{
+					$instance = new $class(unserialize($value));
+					$instance->init($uuids[$k]);
+					$all[] = $instance;
+				}
 				return $all;
 			}
 		}
 
-		public static function all($class)
+		public static function all($class, $uuid)
 		{
 			global $odm;
 			$prefix = "{$class}->fetch(";
 			$len = strlen($prefix);
-			$keys = $odm->keys("{$prefix}*");
+			$keys = $odm->keys("{$prefix}{$uuid}*");
 			foreach ($keys as $k => $v)
 				$keys[$k] = substr($v, strpos($v, $prefix) + $len, strlen($v) - $len - 1);
 			return $keys;
@@ -209,14 +223,7 @@
 				$this->existence = false;
 			}
 			$this->fromArray($this->rawData);
-			foreach ($this->field as $k => $v)
-				if ($v[0] ==  'atomic')
-					$this->$k = new Atomic("{$this->className}->{$k}({$uuid})");
-			if (isset($this->primary))
-			{
-				$primary = $this->primary;
-				$this->$primary = $uuid;
-			}
+			$this->init($uuid);
 		}
 
 		// cache scan result so that following operation can be quicker
