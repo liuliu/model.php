@@ -2,6 +2,17 @@
 	require_once 'odm.php';
 	require_once 'util.php';
 
+	/* Model Types (first element of array):
+	   integer, number, boolean, string,
+	   array, serializable,
+	   atomic,
+	   index, multi-index, primary, unique, cluster-record,
+	   Model Prototype/Defaults (second element of array):
+	   anything that is newable with default constructor (e.g. new Point()) as prototype,
+	   or any valid input as default,
+	   Model Modifier (third element of array):
+	   private */
+
 	class Atomic
 	{
 		private $identifier;
@@ -63,6 +74,7 @@
 		private $index;
 		private $unique;
 		private $multi_index;
+		private $cluster_record;
 
 		public function exists()
 		{
@@ -82,10 +94,13 @@
 		{
 			$result = array();
 			foreach ($this->field as $k => $v)
-				if ($v[0] != 'atomic')
-					$result[$k] = $this->$k;
-				else
-					$result[$k] = $this->$k->get();
+				if (!isset($v[2]) || $v[2] != 'private')
+				{
+					if ($v[0] != 'atomic')
+						$result[$k] = $this->$k;
+					else
+						$result[$k] = $this->$k->get();
+				}
 			return $result;
 		}
 
@@ -120,6 +135,7 @@
 					case 'primary':
 					case 'index':
 					case 'unique':
+					case 'cluster-record':
 					default:
 						$this->$k = edx($array, $k, $v[1]);
 				}
@@ -157,7 +173,7 @@
 			}
 		}
 
-		public static function all($class, $uuid)
+		public static function all($class, $uuid = '')
 		{
 			global $odm;
 			$prefix = "{$class}->fetch(";
@@ -250,39 +266,58 @@
 				$this->unique = self::$scanCache[$this->className]['unique'];
 				$this->primary = self::$scanCache[$this->className]['primary'];
 				$this->multi_index = self::$scanCache[$this->className]['multi-index'];
+				$this->cluster_record = self::$scanCache[$this->className]['cluster-record'];
 			} else {
-				$field = array();
-				$index = array();
-				$unique = array();
-				$multi_index = array();
-				foreach ($this as $k => $v)
-					if (is_array($v))
-					{
-						$field[$k] = $v;
-						switch ($v[0])
+				self::$scanCache[$this->className] = apc_fetch("model.php::scanCache[{$this->className}]", $success);
+				if ($success)
+				{
+					$this->field = self::$scanCache[$this->className]['field'];
+					$this->index = self::$scanCache[$this->className]['index'];
+					$this->unique = self::$scanCache[$this->className]['unique'];
+					$this->primary = self::$scanCache[$this->className]['primary'];
+					$this->multi_index = self::$scanCache[$this->className]['multi-index'];
+					$this->cluster_record = self::$scanCache[$this->className]['cluster-record'];
+				} else {
+					$field = array();
+					$index = array();
+					$unique = array();
+					$multi_index = array();
+					$cluster_record = array();
+					foreach ($this as $k => $v)
+						if (is_array($v))
 						{
-							case 'primary':
-								$this->primary = $k;
-								break;
-							case 'index':
-								$index[] = $k;
-								break;
-							case 'unique':
-								$unique[] = $k;
-								break;
-							case 'multi-index':
-								$multi_index[] = $k;
+							$field[$k] = $v;
+							switch ($v[0])
+							{
+								case 'primary':
+									$this->primary = $k;
+									break;
+								case 'index':
+									$index[] = $k;
+									break;
+								case 'unique':
+									$unique[] = $k;
+									break;
+								case 'multi-index':
+									$multi_index[] = $k;
+									break;
+								case 'cluster-record':
+									$cluster_record[] = $k;
+							}
 						}
-					}
-				$this->field = $field;
-				$this->index = $index;
-				$this->unique = $unique;
-				$this->multi_index = $multi_index;
-				self::$scanCache[$this->className] = array('field' => $field,
-														   'index' => $index,
-														   'unique' => $unique,
-														   'multi-index' => $multi_index,
-														   'primary' => $this->primary);
+					$this->field = $field;
+					$this->index = $index;
+					$this->unique = $unique;
+					$this->multi_index = $multi_index;
+					$this->cluster_record = $cluster_record;
+					self::$scanCache[$this->className] = array('field' => $field,
+															   'index' => $index,
+															   'unique' => $unique,
+															   'multi-index' => $multi_index,
+															   'cluster-record' => $cluster_record,
+															   'primary' => $this->primary);
+					apc_store("model.php::scanCache[{$this->className}]", self::$scanCache[$this->className]);
+				}
 			}
 		}
 
@@ -292,7 +327,7 @@
 			$this->scan();
 			if (is_array($uuid))
 				$this->fromArray($uuid);
-			else
+			else if (isset($uuid))
 				$this->fetch($uuid);
 		}
 
@@ -303,7 +338,7 @@
 			if (isset($this->primary))
 			{
 				$primary = $this->primary;
-				if (count($this->index) == 0 && count($this->unique) == 0 && count($this->multi_index) == 0)
+				if (count($this->index) == 0 && count($this->unique) == 0 && count($this->multi_index) == 0 && count($this->cluster_record) == 0)
 				{
 					$odm->set("{$this->className}->fetch({$this->$primary})", serialize($this->toArrayInternal()));
 				} else {
@@ -318,12 +353,15 @@
 					$kvmdx = array();
 					foreach ($this->multi_index as $v)
 					{
-						$this->$v = array_unique($this->$v);
+						$this->$v = isset($this->$v) ? array_unique($this->$v) : array();
 						$kvmdx[$v] = $this->$v;
 					}
+					$kvcr = array();
+					foreach ($this->cluster_record as $v)
+						$kvcr[$v] = $this->$v;
 					$serialized = serialize($this->toArrayInternal());
 					$rawData = $this->rawData;
-					$odm->pipeline(function ($pipe) use ($className, $uuid, $serialized, $rawData, $kvidx, $kvunq, $kvmdx) {
+					$odm->pipeline(function ($pipe) use ($className, $uuid, $serialized, $rawData, $kvidx, $kvunq, $kvmdx, $kvcr) {
 						$pipe->set("{$className}->fetch({$uuid})", $serialized);
 						foreach ($kvidx as $k => $v)
 							if ($rawData[$k] !== $v)
@@ -349,6 +387,13 @@
 							foreach ($rem as $rv)
 								$pipe->srem("{$className}->multiIndexOf({$k},{$rv})", $uuid);
 						}
+						foreach ($kvcr as $k => $v)
+							if ($rawData[$k] !== $v)
+							{
+								$pipe->incrby("{$className}->recordOf({$k},{$v})", 1);
+								if (!empty($rawData[$k]))
+									$pipe->decrby("{$className}->recordOf({$k},{$rawData[$k]})", 1);
+							}
 					});
 				}
 				$this->existence = true;

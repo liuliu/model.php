@@ -10,6 +10,7 @@
 		public $author = array('index');
 		public $key = array('unique');
 		public $coauthor = array('multi-index');
+		public $page = array('cluster-record');
 
 		public function __construct($uuid)
 		{
