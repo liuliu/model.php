@@ -1,6 +1,6 @@
 <?php
-	require_once 'odm.php';
-	require_once 'util.php';
+	require_once dirname(__FILE__).'/odm.php';
+	require_once dirname(__FILE__).'/util.php';
 
 	/* Model Types (first element of array):
 	   integer, number, boolean, string,
@@ -15,6 +15,7 @@
 
 	class Atomic
 	{
+		private $odm;
 		private $identifier;
 
 		public function get($pipe = null)
@@ -22,8 +23,7 @@
 			if (isset($pipe))
 				return $pipe->get($this->identifier);
 			else {
-				global $odm;
-				return $odm->get($this->identifier);
+				return $this->odm->get($this->identifier);
 			}
 		}
 
@@ -32,8 +32,7 @@
 			if (isset($pipe))
 				return $pipe->set($this->identifier, $val);
 			else {
-				global $odm;
-				return $odm->set($this->identifier, $val);
+				return $this->odm->set($this->identifier, $val);
 			}
 		}
 
@@ -42,8 +41,7 @@
 			if (isset($pipe))
 				return $pipe->incrby($this->identifier, $val);
 			else {
-				global $odm;
-				return $odm->incrby($this->identifier, $val);
+				return $this->odm->incrby($this->identifier, $val);
 			}
 		}
 
@@ -52,13 +50,13 @@
 			if (isset($pipe))
 				return $pipe->decrby($this->identifier, $val);
 			else {
-				global $odm;
-				return $odm->decrby($this->identifier, $val);
+				return $this->odm->decrby($this->identifier, $val);
 			}
 		}
 
-		public function __construct($identifier = null)
+		public function __construct($odm, $identifier = null)
 		{
+			$this->odm = $odm;
 			$this->identifier = $identifier;
 		}
 	}
@@ -70,6 +68,7 @@
 		private $existence;
 		private $field;
 		private $className;
+		private $odm;
 		private $primary;
 		private $index;
 		private $unique;
@@ -145,7 +144,7 @@
 		{
 			foreach ($this->field as $k => $v)
 				if ($v[0] ==  'atomic')
-					$this->$k = new Atomic("{$this->className}->{$k}({$uuid})");
+					$this->$k = new Atomic($this->odm, "{$this->className}->{$k}({$uuid})");
 			if (isset($this->primary))
 			{
 				$primary = $this->primary;
@@ -157,7 +156,7 @@
 		{
 			if (is_array($uuids) && count($uuids) > 0)
 			{
-				global $odm;
+				$odm = edx(self::$odmCache, $class, self::$odmCache['Model']);
 				$keys = array();
 				foreach ($uuids as $uuid)
 					$keys[] = "{$class}->fetch({$uuid})";
@@ -175,13 +174,20 @@
 
 		public static function all($class, $uuid = '')
 		{
-			global $odm;
+			$odm = edx(self::$odmCache, $class, self::$odmCache['Model']);
 			$prefix = "{$class}->fetch(";
 			$len = strlen($prefix);
 			$keys = $odm->keys("{$prefix}{$uuid}*");
 			foreach ($keys as $k => $v)
 				$keys[$k] = substr($v, strpos($v, $prefix) + $len, strlen($v) - $len - 1);
 			return $keys;
+		}
+
+		private static $odmCache = array();
+
+		public static function connect($class, Predis\Client $odm)
+		{
+			self::$odmCache[$class] = $odm;
 		}
 
 		// cache a specific instance of subclass s.t. some static
@@ -194,7 +200,7 @@
 
 		public static function find($class, $member, $indexes)
 		{
-			global $odm;
+			$odm = edx(self::$odmCache, $class, self::$odmCache['Model']);
 			if (!isset(self::$instanceCache[$class]))
 				self::$instanceCache[$class] = new $class();
 			$type = self::$instanceCache[$class]->field[$member][0];
@@ -240,7 +246,7 @@
 
 		public function fetch($uuid)
 		{
-			global $odm;
+			$odm = $this->odm;
 			$rawData = $odm->get("{$this->className}->fetch({$uuid})");
 			if (isset($rawData))
 			{
@@ -324,6 +330,9 @@
 		public function __construct($uuid)
 		{
 			$this->className = get_class($this);
+			$this->odm = edx(Model::$odmCache, $this->className, Model::$odmCache['Model']);
+			if (!($this->odm instanceof Predis\Client))
+				throw new Exception("odm isn't set for " . $this->className);
 			$this->scan();
 			if (is_array($uuid))
 				$this->fromArray($uuid);
@@ -333,7 +342,7 @@
 
 		public function save()
 		{
-			global $odm;
+			$odm = $this->odm;
 			$primary = $this->primary;
 			if (isset($this->primary))
 			{
@@ -400,3 +409,5 @@
 			}
 		}
 	}
+
+	Model::connect(Model, $odm);
